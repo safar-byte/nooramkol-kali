@@ -22,6 +22,7 @@ const COLORS = {
   blocker: 'rgba(255, 170, 70, 0.95)',
   hint: 'rgba(110, 220, 220, 0.9)',
   focus: 'rgba(130, 190, 255, 0.95)',
+  remote: 'rgba(150, 200, 255, 0.55)',
   cord: '#9c3b2b',
   debug: 'rgba(0, 230, 255, 0.7)',
   debugHit: 'rgba(255, 60, 220, 0.95)',
@@ -284,6 +285,7 @@ export function drawBoard(ctx, scene) {
     const id = item.stick.id;
     if (overlays.hoverId === id && overlays.selectedId !== id) drawRing(ctx, item, COLORS.hover, 9);
     if (overlays.selectedId === id) drawRing(ctx, item, COLORS.selected, 12);
+    if (overlays.remoteId === id) drawRing(ctx, item, COLORS.remote, 12);
     if (overlays.hintId === id) drawRing(ctx, item, `rgba(110, 220, 220, ${0.35 + pulse * 0.45})`, 12);
   }
 

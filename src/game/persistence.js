@@ -15,6 +15,7 @@ export function defaultSave({ prefersReducedMotion = false } = {}) {
       language: 'en',
       foulEndsRound: false,
       debugOverlay: false,
+      playerName: '',
     },
     bestScores: { relaxed: null, traditional: null, expert: null },
   };
@@ -42,6 +43,7 @@ export function sanitizeSave(raw, defaults = defaultSave()) {
     if (typeof settings[key] === 'boolean') save.settings[key] = settings[key];
   }
   if (settings.language === 'en' || settings.language === 'ml') save.settings.language = settings.language;
+  if (typeof settings.playerName === 'string') save.settings.playerName = settings.playerName.trim().slice(0, 20);
 
   const best = raw.bestScores && typeof raw.bestScores === 'object' ? raw.bestScores : {};
   for (const difficulty of DIFFICULTY_ORDER) save.bestScores[difficulty] = sanitizeBest(best[difficulty]);

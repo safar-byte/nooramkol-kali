@@ -29,7 +29,28 @@ function animProgress(anim, now) {
   return clamp((now - anim.start - (anim.delay ?? 0)) / anim.duration, 0, 1);
 }
 
-export function createBoardController({ canvas, getState, getSettings, dispatch, onFeedback, onAnnounce, translate }) {
+const round2 = (n) => Math.round(n * 100) / 100;
+
+/**
+ * Online-play options (all optional; the defaults give solo behaviour):
+ * - canAct(): false while it is the other player's turn.
+ * - isAuthority(): only the authority dispatches timer-driven setup actions.
+ * - onDragUpdate({stickId,x,y} | null): stream of the local drag for the opponent.
+ * - getRemoteDrag(): the opponent's current drag, if any.
+ */
+export function createBoardController({
+  canvas,
+  getState,
+  getSettings,
+  dispatch,
+  onFeedback,
+  onAnnounce,
+  translate,
+  canAct = () => true,
+  isAuthority = () => true,
+  onDragUpdate = () => {},
+  getRemoteDrag = () => null,
+}) {
   const ctx = canvas.getContext('2d');
   const view = {
     containerWidth: 0,
@@ -49,6 +70,9 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
     keyboardActive: false,
     drop: null,
     validating: null,
+    remote: null,
+    lastRemote: null,
+    knownRemoved: null,
   };
 
   const layoutOf = (state) => LAYOUTS[state.layout];
@@ -79,7 +103,14 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
   }
 
   function canInteract(state) {
-    return Boolean(state) && state.phase === 'playing' && !state.paused && !view.drag && view.anims.length === 0;
+    return (
+      Boolean(state) &&
+      state.phase === 'playing' &&
+      !state.paused &&
+      !view.drag &&
+      view.anims.length === 0 &&
+      canAct()
+    );
   }
 
   function hitRadius(state) {
@@ -109,10 +140,12 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
     const drag = view.drag;
     const state = getState();
     const layout = layoutOf(state);
-    const pos = { x: clamp(center.x, 0, layout.width), y: clamp(center.y, 0, layout.height) };
-    if (distance(pos, drag.pos) < 0.25) return;
+    // Rounded so the path sent over the network validates identically on the host.
+    const pos = { x: round2(clamp(center.x, 0, layout.width)), y: round2(clamp(center.y, 0, layout.height)) };
+    if (distance(pos, drag.pos) < 0.5) return;
     drag.pos = pos;
     drag.path.push(pos);
+    onDragUpdate({ stickId: drag.stickId, x: pos.x, y: pos.y });
     const failure = drag.validator.advance(pos);
     if (failure) failDrag(failure);
   }
@@ -121,6 +154,7 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
     const drag = view.drag;
     view.drag = null;
     view.blockerIds = [];
+    if (drag) onDragUpdate(null);
     return drag;
   }
 
@@ -143,6 +177,7 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
       stickId: drag.stickId,
       reason: result.reason,
       disturbedStickIds: result.disturbedStickIds,
+      path: drag.path,
       now: Date.now(),
     });
     sound('failure');
@@ -184,7 +219,7 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
       delay: 0,
       duration: reduced() ? 0 : 380,
     });
-    dispatch({ type: ACTIONS.MOVE_SUCCEEDED, stickId: stick.id, now: Date.now() });
+    dispatch({ type: ACTIONS.MOVE_SUCCEEDED, stickId: stick.id, path: drag.path, now: Date.now() });
     sound('success');
     onFeedback({
       kind: 'success',
@@ -349,6 +384,46 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
     view.hoverId = null;
     view.drop = null;
     view.validating = null;
+    view.remote = null;
+    view.lastRemote = null;
+    view.knownRemoved = null;
+  }
+
+  /** Highlight sticks disturbed by the opponent's foul. */
+  function flashFailure(ids) {
+    view.flash = { ids, until: performance.now() + 2200 };
+  }
+
+  /** Track the opponent's drag and animate sticks they removed into the tray. */
+  function updateRemote(state, now) {
+    const remote = getRemoteDrag();
+    const valid =
+      remote &&
+      state.selectedStickId === remote.stickId &&
+      view.drag?.stickId !== remote.stickId &&
+      !state.sticks.find((s) => s.id === remote.stickId)?.removed;
+    view.remote = valid ? remote : null;
+    if (view.remote) view.lastRemote = view.remote;
+
+    const removedIds = state.sticks.filter((s) => s.removed).map((s) => s.id);
+    if (view.knownRemoved) {
+      const layout = layoutOf(state);
+      for (const id of removedIds) {
+        if (view.knownRemoved.has(id) || view.anims.some((a) => a.stickId === id)) continue;
+        const stick = state.sticks.find((s) => s.id === id);
+        const from = view.lastRemote?.stickId === id ? view.lastRemote : stick;
+        view.anims.push({
+          type: 'fly',
+          stickId: id,
+          from: { x: from.x, y: from.y, angle: nearestHorizontal(stick.angle), lengthScale: 1 },
+          to: getTraySlot(layout, stick.removedOrder ?? 0),
+          start: now,
+          delay: 0,
+          duration: reduced() ? 0 : 380,
+        });
+      }
+    }
+    view.knownRemoved = new Set(removedIds);
   }
 
   // ---- per-frame ------------------------------------------------------------
@@ -360,7 +435,7 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
         view.drop = { key, start: now, duration: reduced() ? 0 : DROP_DURATION, settled: false };
         sound('drop');
       }
-      if (!view.drop.settled && now - view.drop.start >= view.drop.duration) {
+      if (!view.drop.settled && now - view.drop.start >= view.drop.duration && isAuthority()) {
         view.drop.settled = true;
         dispatch({ type: ACTIONS.DROP_SETTLED });
       }
@@ -369,13 +444,15 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
       const key = roundKey(state);
       if (view.validating?.key !== key) view.validating = { key, start: now, sent: false };
       const delay = reduced() ? 150 : VALIDATE_DELAY;
-      if (!view.validating.sent && now - view.validating.start >= delay) {
+      if (!view.validating.sent && now - view.validating.start >= delay && isAuthority()) {
         view.validating.sent = true;
         dispatch({ type: ACTIONS.PILE_VALIDATED, now: Date.now() });
       }
     }
-    if (state.pileCheck && state.pileCheck !== view.lastPileCheck) {
-      view.lastPileCheck = state.pileCheck;
+    // Keyed by round/drop, not object identity: online snapshots replace objects.
+    const pileKey = state.pileCheck ? roundKey(state) : null;
+    if (pileKey && pileKey !== view.lastPileCheck) {
+      view.lastPileCheck = pileKey;
       if (state.pileCheck.valid) view.successFlash = { ids: state.pileCheck.overlappingSmallIds, until: now + 2600 };
     }
 
@@ -438,6 +515,10 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
         topItems.push({ stick, x: view.drag.pos.x, y: view.drag.pos.y, angle: stick.angle, lift: 0.55 });
         return;
       }
+      if (view.remote?.stickId === stick.id) {
+        topItems.push({ stick, x: view.remote.x, y: view.remote.y, angle: stick.angle, lift: 0.55 });
+        return;
+      }
       if (anim?.type === 'return') {
         const e = easeOutCubic(animProgress(anim, now));
         pileItems.push({
@@ -497,6 +578,7 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
     if (state.layout !== view.layoutName) resize(view.containerWidth, view.containerHeight);
     if (canvas.width === 0) return;
     updateTimers(state, now);
+    updateRemote(state, now);
 
     const layout = layoutOf(state);
     const { trayItems, pileItems, topItems } = buildItems(state, now);
@@ -516,6 +598,7 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
       },
       overlays: {
         selectedId: view.drag?.stickId ?? null,
+        remoteId: view.remote?.stickId ?? null,
         hoverId: view.drag ? null : view.hoverId,
         hintId: view.hint?.stickId ?? null,
         hintPath: view.hint?.path ?? null,
@@ -534,6 +617,7 @@ export function createBoardController({ canvas, getState, getSettings, dispatch,
     resize,
     frame,
     reset,
+    flashFailure,
     showHint,
     cancelInteraction,
     handleKey,

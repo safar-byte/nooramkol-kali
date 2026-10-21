@@ -1,6 +1,6 @@
 # Nooramkol Kali (നൂറാംകോൽ കളി)
 
-A single-player browser prototype of **Nooramkol Kali**, also known as **Eerkkil Kali**, a traditional Kerala stick-picking game. Drop a bundle of sticks, then take them out of the pile one at a time without disturbing the others.
+A browser prototype of **Nooramkol Kali**, also known as **Eerkkil Kali**, a traditional Kerala stick-picking game. Drop a bundle of sticks, then take them out of the pile one at a time without disturbing the others. Play solo, or online against a friend.
 
 > The game rewards patience and precision, not speed.
 
@@ -14,6 +14,25 @@ npm run build      # static site in dist/
 ```
 
 The build is fully static, with relative asset paths, so `dist/` runs on any static host. It is published to GitHub Pages from the `gh-pages` branch (`npm run deploy`).
+
+## Play with a friend (online)
+
+1. One player chooses **Play with a friend → Create a room** and shares the 6-character code, or the invite link (`?room=CODE`).
+2. The other player enters the code and presses **Join**. The room creator then picks the difficulty and presses **Start match**.
+3. Both players pick from the **same pile**. A clean pick scores for you and **you keep the turn**. A **foul passes the turn** to the other player, and the stick stays in the pile.
+4. When the pile is empty, the higher score wins. The room creator can start a **Rematch**, and the starting player alternates each round.
+
+While it is the other player's turn, you can watch their stick move live. Either player can pause. If a player's connection drops, the game pauses for both, and the player can rejoin the same room with the same code.
+
+**How it works.** The two browsers connect directly using WebRTC through [PeerJS](https://peerjs.com/). The free public PeerJS server is only used to help the browsers find each other, so the game remains a static site with no backend.
+
+- The room creator's browser is the referee. It runs the match rules (`src/game/matchReducer.js`) and sends the full game state to the other player after every change.
+- The joining player's browser applies its own moves straight away, without waiting for the room creator, and then lines up with the state the room creator sends back.
+- Each pick from the joining player arrives with its drag path. The room creator re-checks that path with the same rules (`src/game/resolvePick.js`), so a modified browser cannot claim a clean pick it didn't make.
+- Every message from the other browser is validated before use (`src/net/protocol.js`).
+- Both browsers send a heartbeat, so a closed tab or lost network is noticed within about 10 seconds.
+
+**Limitations.** Some networks (offices, schools, some mobile carriers) block direct browser-to-browser connections. Players on those networks will see a "couldn't connect" message, because there is no relay (TURN) server. The board layout (landscape or portrait) is set by the room creator's screen. If the room creator closes their tab, the match ends.
 
 ## Rules in this version
 
@@ -73,17 +92,20 @@ src/
 │   ├── hints.js         Finds a cleanly removable stick and its path
 │   ├── hitTest.js       Pointer → board coordinates, topmost-stick picking
 │   ├── gameReducer.js   Explicit phases and actions, derived summary
+│   ├── matchReducer.js  2-player turns, per-player scores, prediction replay
+│   ├── resolvePick.js   Authoritative verdict for a remote pick
 │   ├── persistence.js   localStorage schema, sanitising, best scores
 │   ├── boardController.js  Drag state, animations, per-frame rendering
 │   ├── drawBoard.js     Canvas drawing (cached tabletop)
 │   ├── inputController.js  Pointer Events wiring
 │   └── sound.js         Synthesised Web Audio effects (no audio files)
-├── hooks/               useGameLoop (rAF), useLocalSettings
+├── net/                 PeerJS rooms (peerRoom.js) and the validated wire protocol
+├── hooks/               useGameLoop (rAF), useLocalSettings, useMultiplayerMatch
 ├── styles/
 └── test/                Vitest suites
 ```
 
-Game phases run `bundling → dropping → validating-pile → playing → complete`. A foul drop goes `validating-pile → foul-retry → bundling`, and a second foul drop goes to `setup-failed`. The reducer guards every transition, so a duplicate or late event cannot resolve the same move twice. Randomness enters only through seeds carried on actions. That keeps the rules reproducible and lets a future multiplayer server reuse them.
+Game phases run `bundling → dropping → validating-pile → playing → complete`. A foul drop goes `validating-pile → foul-retry → bundling`, and a second foul drop goes to `setup-failed`. The reducer guards every transition, so a duplicate or late event cannot resolve the same move twice. Randomness enters only through seeds carried on actions. That keeps the rules reproducible, which the online mode relies on: both browsers compute the same pile from the same seed.
 
 ## Persistence
 

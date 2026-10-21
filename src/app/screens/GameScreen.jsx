@@ -50,7 +50,7 @@ function Hud({ t, game, summary }) {
   );
 }
 
-function SetupPanel({ t, game, dispatch }) {
+function SetupPanel({ t, game, dispatch, waitingName }) {
   const { phase, dropAttempts } = game;
   if (phase === 'foul-retry') {
     return (
@@ -60,9 +60,13 @@ function SetupPanel({ t, game, dispatch }) {
           {t('foulDropTitle')}
         </p>
         <p>{t('foulDropText')}</p>
-        <button type="button" className="btn btn-primary" onClick={() => dispatch({ type: ACTIONS.RETRY_DROP })}>
-          {t('rebundle')}
-        </button>
+        {waitingName ? (
+          <p className="setup-waiting">{t('waitingRebundle', { name: waitingName })}</p>
+        ) : (
+          <button type="button" className="btn btn-primary" onClick={() => dispatch({ type: ACTIONS.RETRY_DROP })}>
+            {t('rebundle')}
+          </button>
+        )}
       </div>
     );
   }
@@ -76,16 +80,90 @@ function SetupPanel({ t, game, dispatch }) {
         {phase === 'dropping' && t('dropping')}
         {phase === 'validating-pile' && t('checkingPile')}
       </p>
-      <button
-        type="button"
-        className="btn btn-primary"
-        disabled={busy || game.paused}
-        onClick={() => dispatch({ type: ACTIONS.DROP_STICKS, seed: randomSeed() })}
-      >
-        {isRetry ? t('dropAgain') : t('dropSticks')}
-      </button>
+      {waitingName && phase === 'bundling' ? (
+        <p className="setup-waiting">{t('waitingDrop', { name: waitingName })}</p>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || game.paused || Boolean(waitingName)}
+          onClick={() => dispatch({ type: ACTIONS.DROP_STICKS, seed: randomSeed() })}
+        >
+          {isRetry ? t('dropAgain') : t('dropSticks')}
+        </button>
+      )}
     </div>
   );
+}
+
+function PlayersBar({ t, match, myId }) {
+  const current = match.players[match.currentPlayerIndex];
+  const isMyTurn = current.id === myId;
+  const card = (player, index) => {
+    const active = index === match.currentPlayerIndex;
+    return (
+      <div key={player.id} className={`player-card${active ? ' is-active' : ''}`}>
+        <span className="player-name">
+          {player.name}
+          {player.id === myId && <span className="player-you"> ({t('you')})</span>}
+        </span>
+        <span className="player-score">{player.stats.score}</span>
+        <span className="player-meta">
+          {active && <span className="turn-badge">▶ {t('turnMarker')} · </span>}
+          {t('playerFouls', { count: player.stats.failedAttempts })}
+        </span>
+      </div>
+    );
+  };
+  return (
+    <div className="players-bar">
+      {card(match.players[0], 0)}
+      <p className={`turn-banner${isMyTurn ? ' is-mine' : ''}`} role="status">
+        {isMyTurn ? t('yourTurn') : t('theirTurn', { name: current.name })}
+      </p>
+      {card(match.players[1], 1)}
+    </div>
+  );
+}
+
+const FOUL_REASON_KEYS = { 'lifted-from-under': 'foulLifted', 'disturbed-other-stick': 'foulDisturbed' };
+
+/** Blocking dialogs for connection problems in an online match. */
+function ConnectionDialog({ t, online, onLeave }) {
+  const { status, isHost, opponentName, roomCode } = online;
+  if (status === 'opponent-left') {
+    return (
+      <Dialog title={t('opponentLeftTitle')} titleIcon="⚠">
+        <p>
+          {isHost
+            ? t('opponentLeftHost', { name: opponentName, code: roomCode })
+            : t('opponentLeftGuest', { name: opponentName })}
+        </p>
+        <div className="dialog-actions">
+          <button type="button" className="btn btn-primary" onClick={onLeave}>
+            {t('leaveRoom')}
+          </button>
+        </div>
+      </Dialog>
+    );
+  }
+  if (!isHost && (status === 'disconnected' || status === 'joining')) {
+    return (
+      <Dialog title={t('connectionLostTitle')} titleIcon="⚠">
+        <p>{status === 'joining' ? t('joiningRoom', { code: roomCode }) : t('connectionLostText', { name: opponentName })}</p>
+        {online.error && <p className="lobby-error">{online.error}</p>}
+        <div className="dialog-actions">
+          <button type="button" className="btn btn-ghost" onClick={onLeave}>
+            {t('leaveRoom')}
+          </button>
+          <button type="button" className="btn btn-primary" onClick={online.reconnect} disabled={status === 'joining'}>
+            {t('reconnect')}
+          </button>
+        </div>
+      </Dialog>
+    );
+  }
+  return null;
 }
 
 export default function GameScreen({
@@ -98,6 +176,7 @@ export default function GameScreen({
   onHome,
   onChangeDifficulty,
   onOpenRules,
+  online = null,
 }) {
   const canvasRef = useRef(null);
   const wrapRef = useRef(null);
@@ -109,12 +188,25 @@ export default function GameScreen({
   settingsRef.current = settings;
   translateRef.current = t;
 
+  const match = online?.match ?? null;
+  const myId = online?.myId ?? null;
+  const currentPlayer = match ? match.players[match.currentPlayerIndex] : null;
+  const isMyTurn = !match || currentPlayer.id === myId;
+  const onlineRef = useRef(null);
+  onlineRef.current = {
+    isOnline: Boolean(online),
+    isHost: Boolean(online?.isHost),
+    isMyTurn,
+    sendDrag: online?.sendDrag,
+    getRemoteDrag: online?.getRemoteDrag,
+  };
+
   const [toast, setToast] = useState(null);
   const [announcement, setAnnouncement] = useState('');
   const coarsePointer = useMediaQuery('(pointer: coarse)');
   const summary = getRoundSummary(game);
   const config = DIFFICULTIES[game.difficulty];
-  const hintsAvailable = config.hints && settings.hints;
+  const hintsAvailable = config.hints && settings.hints && isMyTurn;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -129,8 +221,14 @@ export default function GameScreen({
       },
       onAnnounce: setAnnouncement,
       translate: (key, params) => translateRef.current(key, params),
+      canAct: () => onlineRef.current.isMyTurn,
+      isAuthority: () => !onlineRef.current.isOnline || onlineRef.current.isHost,
+      onDragUpdate: (drag) => onlineRef.current.sendDrag?.(drag),
+      getRemoteDrag: () => onlineRef.current.getRemoteDrag?.() ?? null,
     });
     controllerRef.current = controller;
+    // Dev-only handle for automated playtesting; removed from production builds.
+    if (import.meta.env.DEV) window.__nooramkol = { getState: () => gameRef.current, controller };
     const detach = attachInputController(canvas, controller.pointerHandlers);
     const observer = new ResizeObserver(([entry]) => {
       controller.resize(entry.contentRect.width, entry.contentRect.height);
@@ -155,17 +253,52 @@ export default function GameScreen({
     if (game.paused) controllerRef.current?.cancelInteraction();
   }, [game.paused]);
 
+  // Keyed on primitives: online snapshots replace objects even when nothing changed.
+  const pileKey = game.pileCheck ? `${game.seed}:${game.startedAt}:${game.dropAttempts}` : null;
+  // Skip a result that already existed when this screen mounted (e.g. rejoining a match).
+  const seenPileKeyRef = useRef(pileKey);
   useEffect(() => {
-    if (game.pileCheck?.valid) {
+    if (!pileKey || pileKey === seenPileKeyRef.current) return;
+    seenPileKeyRef.current = pileKey;
+    if (game.pileCheck.valid) {
       const text = t('pileValid', { count: game.pileCheck.overlappingSmallIds.length });
       setToast({ kind: 'success', text, id: performance.now() });
       setAnnouncement(text);
-    } else if (game.pileCheck) {
+    } else {
       setAnnouncement(game.phase === 'setup-failed' ? t('setupFailedText') : t('foulDropText'));
     }
     // Only react to a new validation result.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game.pileCheck]);
+  }, [pileKey]);
+
+  // Online: announce picks and fouls, including the opponent's.
+  const event = match?.lastEvent;
+  const eventKey = event ? `${match.round}:${event.seq}` : null;
+  const seenEventRef = useRef(event ? { round: match.round, seq: event.seq } : null);
+  useEffect(() => {
+    if (!eventKey) return;
+    // Monotonic per round, so a late or replayed snapshot never repeats a toast.
+    const seen = seenEventRef.current;
+    if (seen && seen.round === match.round && event.seq <= seen.seq) return;
+    seenEventRef.current = { round: match.round, seq: event.seq };
+    const nameOf = (id) => match.players.find((p) => p.id === id)?.name ?? '';
+    const mine = event.playerId === myId;
+    let next = null;
+    if (event.type === 'foul') {
+      const reason = t(FOUL_REASON_KEYS[event.reason] ?? 'foulDisturbed');
+      next = mine
+        ? { kind: 'failure', text: `${reason} ${t('mpYouFouled', { next: nameOf(event.nextPlayerId) })}` }
+        : { kind: 'info', text: t('mpOpponentFouled', { name: nameOf(event.playerId) }) };
+      if (!mine) controllerRef.current?.flashFailure(event.disturbedStickIds ?? []);
+    } else if (event.type === 'pick' && !mine) {
+      next = { kind: 'success', text: t('mpOpponentPicked', { name: nameOf(event.playerId), points: event.points }) };
+    }
+    if (next) {
+      setToast({ ...next, id: performance.now() });
+      setAnnouncement(next.text);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventKey]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -175,6 +308,14 @@ export default function GameScreen({
 
   const canPause = !game.paused && ['bundling', 'foul-retry', 'playing'].includes(game.phase);
   const pause = () => dispatch({ type: ACTIONS.PAUSE_GAME });
+  const connectionIssue =
+    online &&
+    (online.status === 'opponent-left' ||
+      (!online.isHost && (online.status === 'disconnected' || online.status === 'joining')));
+  const opponent = match?.players.find((p) => p.id !== myId);
+  // Online, only the host can start a new round; the guest waits.
+  const canRestart = !online || online.isHost;
+  const homeLabel = online ? t('leaveRoom') : t('home');
 
   return (
     <div className="game-screen">
@@ -204,13 +345,16 @@ export default function GameScreen({
             <span aria-hidden="true">⏸</span>
             <span className="btn-text"> {t('pause')}</span>
           </button>
-          <button type="button" className="btn btn-ghost btn-small" onClick={onRestart} aria-label={t('restart')}>
-            <span aria-hidden="true">↻</span>
-            <span className="btn-text"> {t('restart')}</span>
-          </button>
+          {!online && (
+            <button type="button" className="btn btn-ghost btn-small" onClick={onRestart} aria-label={t('restart')}>
+              <span aria-hidden="true">↻</span>
+              <span className="btn-text"> {t('restart')}</span>
+            </button>
+          )}
         </div>
       </header>
 
+      {match && <PlayersBar t={t} match={match} myId={myId} />}
       <Hud t={t} game={game} summary={summary} />
 
       <div className="board-wrap" ref={wrapRef}>
@@ -225,7 +369,7 @@ export default function GameScreen({
           }}
           onBlur={() => controllerRef.current?.setKeyboardActive(false)}
         />
-        <SetupPanel t={t} game={game} dispatch={dispatch} />
+        <SetupPanel t={t} game={game} dispatch={dispatch} waitingName={isMyTurn ? null : currentPlayer.name} />
         {toast && (
           <div key={toast.id} className={`toast toast-${toast.kind}`} aria-hidden="true">
             <span className="toast-icon">{TOAST_ICONS[toast.kind]}</span>
@@ -235,7 +379,13 @@ export default function GameScreen({
       </div>
 
       <footer className="game-footer">
-        <p className="help-text">{coarsePointer ? t('helpTouch') : t('helpPointer')}</p>
+        <p className="help-text">
+          {!isMyTurn
+            ? t('theirTurn', { name: currentPlayer.name })
+            : coarsePointer
+              ? t('helpTouch')
+              : t('helpPointer')}
+        </p>
         {hintsAvailable && game.phase === 'playing' && (
           <button type="button" className="btn btn-ghost btn-small" onClick={() => controllerRef.current?.showHint()}>
             <span aria-hidden="true">💡 </span>
@@ -252,30 +402,37 @@ export default function GameScreen({
         {announcement}
       </div>
 
-      {game.paused && (
+      {connectionIssue && <ConnectionDialog t={t} online={online} onLeave={onHome} />}
+
+      {!connectionIssue && game.paused && (
         <PauseDialog
           t={t}
           onResume={() => dispatch({ type: ACTIONS.RESUME_GAME })}
-          onRestart={onRestart}
+          onRestart={canRestart ? onRestart : null}
+          restartLabel={online ? t('newRound') : t('restart')}
           onHome={onHome}
+          homeLabel={homeLabel}
         />
       )}
 
-      {game.phase === 'setup-failed' && (
+      {!connectionIssue && game.phase === 'setup-failed' && (
         <Dialog title={t('setupFailedTitle')} titleIcon="✗">
           <p>{t('setupFailedText')}</p>
+          {!canRestart && <p className="setup-waiting">{t('waitingRematch', { name: opponent.name })}</p>}
           <div className="dialog-actions">
             <button type="button" className="btn btn-ghost" onClick={onHome}>
-              {t('home')}
+              {homeLabel}
             </button>
-            <button type="button" className="btn btn-primary" onClick={onRestart} autoFocus>
-              {t('newGame')}
-            </button>
+            {canRestart && (
+              <button type="button" className="btn btn-primary" onClick={onRestart} autoFocus>
+                {online ? t('newRound') : t('newGame')}
+              </button>
+            )}
           </div>
         </Dialog>
       )}
 
-      {game.phase === 'complete' && (
+      {!connectionIssue && game.phase === 'complete' && (
         <CompletionScreen
           t={t}
           game={game}
@@ -284,6 +441,7 @@ export default function GameScreen({
           onPlayAgain={onRestart}
           onChangeDifficulty={onChangeDifficulty}
           onHome={onHome}
+          online={online}
         />
       )}
     </div>

@@ -21,7 +21,16 @@ function DecorativeSticks() {
   );
 }
 
-export default function HomeScreen({ t, settings, bestScores, onDifficultyChange, onPlay, onOpenRules, onOpenSettings }) {
+export default function HomeScreen({
+  t,
+  settings,
+  bestScores,
+  onDifficultyChange,
+  onPlay,
+  onPlayOnline,
+  onOpenRules,
+  onOpenSettings,
+}) {
   const best = bestScores[settings.difficulty];
   return (
     <main className="home">
@@ -66,6 +75,10 @@ export default function HomeScreen({ t, settings, bestScores, onDifficultyChange
 
         <button type="button" className="btn btn-primary btn-large" onClick={onPlay}>
           {t('play')}
+        </button>
+        <button type="button" className="btn btn-ghost btn-online" onClick={onPlayOnline}>
+          <span aria-hidden="true">👥 </span>
+          {t('playOnline')}
         </button>
         <div className="home-secondary">
           <button type="button" className="btn btn-ghost" onClick={onOpenRules}>

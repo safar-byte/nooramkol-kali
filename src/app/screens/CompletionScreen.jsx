@@ -1,7 +1,63 @@
 import { MAX_SCORE } from '../../game/constants.js';
+import { getMatchSummary } from '../../game/matchReducer.js';
 import Dialog from '../Dialog.jsx';
 
-export default function CompletionScreen({ t, game, summary, isNewBest, onPlayAgain, onChangeDifficulty, onHome }) {
+function OnlineCompletion({ t, online, onPlayAgain, onHome }) {
+  const { match, myId, isHost } = online;
+  const { winnerId, isTie } = getMatchSummary(match);
+  const winner = match.players.find((p) => p.id === winnerId);
+  const host = match.players.find((p) => p.id === match.hostId);
+  let title = t('itsATie');
+  if (!isTie && winner) title = winner.id === myId ? t('youWin') : t('playerWins', { name: winner.name });
+
+  return (
+    <Dialog title={title} titleIcon={isTie ? '=' : '★'}>
+      <div className="match-results">
+        {match.players.map((p) => (
+          <div key={p.id} className={`match-result${p.id === winnerId ? ' is-winner' : ''}`}>
+            <span className="match-result-name">
+              {p.id === winnerId && <span aria-hidden="true">★ </span>}
+              {p.name}
+              {p.id === myId && ` (${t('you')})`}
+            </span>
+            <span className="match-result-score">
+              {p.stats.score}
+              <span className="final-score-max"> / {MAX_SCORE}</span>
+            </span>
+            <span className="match-result-meta">
+              {t('successfulMoves')}: {p.stats.successfulMoves} · {t('failedAttempts')}: {p.stats.failedAttempts} ·{' '}
+              {t('bestStreak')}: {p.stats.bestStreak}
+            </span>
+          </div>
+        ))}
+      </div>
+      {!isHost && <p className="setup-waiting">{t('waitingRematch', { name: host.name })}</p>}
+      <div className="dialog-actions">
+        <button type="button" className="btn btn-ghost" onClick={onHome}>
+          {t('leaveRoom')}
+        </button>
+        {isHost && (
+          <button type="button" className="btn btn-primary" onClick={onPlayAgain} autoFocus>
+            {t('rematch')}
+          </button>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+export default function CompletionScreen({
+  t,
+  game,
+  summary,
+  isNewBest,
+  onPlayAgain,
+  onChangeDifficulty,
+  onHome,
+  online = null,
+}) {
+  if (online?.match) return <OnlineCompletion t={t} online={online} onPlayAgain={onPlayAgain} onHome={onHome} />;
+
   const { stats, endedEarly } = game;
   return (
     <Dialog title={endedEarly ? t('roundEnded') : t('pileCleared')} titleIcon={endedEarly ? '■' : '✓'}>
