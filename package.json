@@ -1,0 +1,24 @@
+{
+  "name": "nooramkol-kali",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Single-player browser prototype of Nooramkol Kali, a traditional Kerala stick-picking game.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "deploy": "vitest run && vite build && node scripts/deploy-pages.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8"
+  }
+}
